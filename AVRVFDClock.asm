@@ -3,19 +3,20 @@
 ;
 ; (c) 2012 Julie S Porter
 ;
-.include "m88def.inc"
+.include "m88pdef.inc"
+;.include "m88def.inc"
 ; System Process equates
 ;----------------------------------------------------------------------
 
 
-;.equ DIGITS = 9  ; prototype HW only can handle 6 digits Normal is 9
-;.equ SHIFTBITS = 41; Number of lines on the shift register plus latch bit
-;.equ FIELDBYTES = 6; bytes in a frame field 
+.equ DIGITS = 9  ; prototype HW only can handle 6 digits Normal is 9
+.equ SHIFTBITS = 41; Number of lines on the shift register plus latch bit
+.equ FIELDBYTES = 6; bytes in a frame field 
 
 
-.equ DIGITS = 6  ; prototype HW only can handle 6 digits Normal is 9
-.equ SHIFTBITS = 21; Number of lines on the shift register plus latch bit
-.equ FIELDBYTES = 3; bytes in a frame field 
+;.equ DIGITS = 6  ; prototype HW only can handle 6 digits Normal is 9
+;.equ SHIFTBITS = 21; Number of lines on the shift register plus latch bit
+;.equ FIELDBYTES = 3; bytes in a frame field 
 
 
 ; Shift register layout
@@ -33,13 +34,13 @@
 .equ RX_BUFFER_SIZE = 64
 
 
-.equ	default_YEAR 	= 2012
-.equ	default_Month 	= 07
-.equ	default_Day		= 23
+.equ	default_YEAR 	= __CENTURY__ * 100 + __YEAR__
+.equ	default_Month 	=  __MONTH__
+.equ	default_Day		= __DAY__
 
-.equ	default_Hour	= 18
-.equ	default_Minute	= 07
-.equ	default_Second	= 0
+.equ	default_Hour	= __HOUR__
+.equ	default_Minute	= __MINUTE__
+.equ	default_Second	= __SECOND__
 
 ; TWI defines
 .equ   TWI_slaveAddress     = (0x10<<TWA0);
@@ -52,6 +53,10 @@
 
 ; clock display to main loop (simulation)
 
+; GPIOR0 flag bits
+.equ notLeapYear = 7 ; year selected is not a leap year
+.equ MODE8 = 6		 ; display is in 8 bit mode
+.equ HiLow = 5		 ; used to assemble 2 4 bit trasactions into an 8 bit one
 
 ; fFlags bits
 ; I/D S 
@@ -83,10 +88,10 @@
 .def TTEMP		= r14	; used for masking time frames
 .def ssreg    	= r15
 
-.def temp1		= R16	; interrupt load temp, invalid inside interrupt
+.def temp1		= R16	; interrupt load temp, invalid outside interrupt
 .def MaxBits	= R17	; Bit counter for start pulse reload
 .def fFLAGS		= R18	;
-.def IOMask		= R19	; used in midi parser
+.def IOMask		= R19	; used to combine 2 4 bit transactions
 .def idx		= R20	; temporary register
 .def c_tmp     	= r21 	; passed arguments
 .def ARGL     	= r22 	; passed arguments
@@ -253,8 +258,8 @@ CLOCK:
 	; : Year-1980  : :  Month     : :   Day      :
 	
 	; TIME1					 TIME0
-	; 15 14 12 11 10 09 08 | 07 06 05 04 03 02 01 00
-	; :  Hour   : :      Minute     : : Seconds/2  :
+	; 15 14 13 12 11 10 09 08 | 07 06 05 04 03 02 01 00
+	; :  Hour      : :      Minute     : : Seconds/2  :
 
 DOSTIME:
 	mov R16,TIME0
@@ -322,11 +327,11 @@ SECOVERFLOW:
 	cpi R16,60			; minutes are valid 0 to 59
 	brlt L0214			; update minutes and seconds
 
-	ldi R16,0
-L0313:
-
-
 	; update hour
+
+	ldi R16,0xF8		; zero the minutes and
+	and TIME1,R16		; seconds 
+	clr TIME0			; should be cleared anyway
 
 	mov R16,TIME1
 	lsr R16
@@ -346,48 +351,153 @@ L0313:
 
 	pop R16
 	cpi R16,24			; valid hours are 0 to 23
-	brlo L0264			; update hours minutes and seconds
-	clr R16				; clear the hour 
+	brlo L0214			; update hours minutes and seconds
+	clr TIME1				; clear the hour,Minute,and 
+	clr TIME0				; clear the seconds
+
 
 L0264:
 
+	; we have to decode the year month and day since we
+	; need to track leap years 
+
+	; first we de reference month for compares
+	mov R16,TIME2
+	andi R16,0xE0
+	mov TTEMP,TIME3
+	lsr TTEMP
+	ror r16
+	swap r16
+	andi r16,0x0F
+	push r16			; current month is now on stack
+
 	; tbw code to handle date (YMD)
+		;date = cjl_dir_buffer[k+24] & 0x1F;
+	mov r16,TIME2
+	andi r16,0x1F
+	inc r16
+;
+	cpi r16,32
+	brne L0377
 ;if (++t.date==32)
-;{
-;t.month++;
-;t.date=1;
-;}
+
+L0406:
+	;t.date=1;
+	ldi r16,1		; set to 1 and save it onto the stack
+	rjmp L0409		; month++
+
+L0377:
+	cpi r16,31
+	brne L0388
+
 ;else if (t.date==31) 
+	mov TTEMP,r16	; save the date
+	
+	pop r16			; month is on stack
+	push r16		; keep stack balanced
 ;{                    
 ;if ((t.month==4) || (t.month==6) || (t.month==9) || (t.month==11)) 
-;{
-;    t.month++;
-;    t.date=1;
-;}
-;}
+	cpi r16,4
+	breq L0406
+	cpi r16,6
+	breq L0406
+	cpi r16,9
+	breq L0406
+	cpi r16,11
+	breq L0406
+	mov r16,TTEMP	; restore the date
+
+L0388:
+	cpi r16,30
+	brne L0399
 ;else if (t.date==30)
+	mov TTEMP,r16	; save the date
+	
+	pop r16			; month is on stack
+	push r16		; keep stack balanced
+	cpi r16,2
+	brne L0406
 ;{
 ;if(t.month==2)
-;{
-;   t.month++;
-;   t.date=1;
-;}
-;}              
-;else if (t.date==29) 
+
+	mov r16,TTEMP	; restore the date
+
+L0399:
+	cpi r16,29
+	brne L0432
+;else if (t.date==29)
+	mov TTEMP,r16	; save the date
+
+	pop r16			; peek at month
+	push r16		; keep stack balanced month still on stack
+ 	cpi r16,2
+	breq L437		; next month
+	mov r16,TTEMP
+	rjmp L0432
+
+L437:
+	; tbd leapnot flag
+	mov r16,TTEMP
+		; handle leap years
+	sbis GPIOR0,notLeapYear				
+	rjmp L0432
+           
 ;{
 ;if((t.month==2) && (not_leap()))
 ;{
 ;    t.month++;
 ;    t.date=1;
+	ldi r16,1		; set to 1 and save it onto the stack
 ;}                
-;}                          
-;if (t.month==13)
-;{
-;t.month=1;
-;t.year++;
 ;}
 
+L0409:
+	pop TTEMP	; month
+	push r16	; day
+	mov r16, TTEMP 
+	inc r16
+;if (t.month==13)
+	cpi r16,13
+	brlo L0458
+;t.month=1;
+;t.year++;
+	lsr TIME3
+	inc TIME3
+	; calculate leap year flag
+	sbi GPIOR0,notLeapYear
+	mov r16,TIME3 	; possible issue as this is not protected in ISR
+	andi r16,0x03		; which should be off
+	brne L0468
+	cbi GPIOR0,notLeapYear
+L0468:
+	lsl TIME3
 
+	ldi r16,1		; reset month back to january
+
+L0458:
+	; write month back to timer
+	mov TTEMP,r16
+	lsr TIME3		; shiftout month bit
+	swap r16
+	andi r16,0xF0		; shift month over for packing
+	lsl r16
+	rol TIME3		; month bit in time3
+	mov TIME2,r16
+	pop r16
+	push TTEMP
+	                         
+;{
+;}
+	; write the day back to the timer registers
+	; new day is in r16
+L0432:
+	pop TTEMP
+	mov TTEMP,r16	; save the date
+	ldi r16,0xE0	; clear the day bits
+	and TIME2,r16	; mask the lower part of the month bits
+	or TIME2,TTEMP 	; set date in register
+
+	rjmp L0214
 
 
 
@@ -405,33 +515,31 @@ setBitShift:
 cbd:
 	lsr ashift
 	dec MaxBits
-	breq STARTSEQ
+	breq STARTFRAME
 
 	dec bshift
 	brne L0269
 
+	tst YH				; we test here before the predecrement
+	brne STARTSEQ		; to extend the time the right most
+						; segments are illuminated
+	ldi YL,low(SegMUX+DIGITS*FIELDBYTES)
+	ldi YH,high(SegMUX+DIGITS*FIELDBYTES)
+	ldi MaxBits,SHIFTBITS		; bits in pattern plus latchbit
 
+STARTSEQ:
 	ld ashift,-Y		; load in next group of bits byte
 	mov bshift,const7
-;	tst YL
-;	breq STARTFRAME		; does this happen?  Max bits should expire first
 	
 	rjmp L0269
 
 STARTFRAME:
-	ldi YL,low(SegMUX+DIGITS*FIELDBYTES)
-	ldi YH,high(SegMUX+DIGITS*FIELDBYTES)
-	;rjmp SuppressLoadPulse
-
-STARTSEQ:
 	; reset shift register counters
 
 	ldi MaxBits,SHIFTBITS		; bits in pattern plus latchbit
 	mov bshift,const7
 ;	clr ashift
 	ld ashift,-Y
-	tst YH
-	breq STARTFRAME		; catch start of frame
 
 
 SuppressLoadPulse:
@@ -553,9 +661,12 @@ L0452:
 	lsr ARGL
 
 	; set leap year flag
+	sbi GPIOR0,notLeapYear
 	mov idx,ARGL 	; possible issue as this is not protected in ISR
 	andi idx,0x03		; which should be off
-
+	brne L0658
+	cbi GPIOR0,notLeapYear
+L0658:
 	subi ARGL,-80
 	subi ARGL,100
 	; DOS date codes represent 3 centuries
@@ -576,7 +687,7 @@ L0485:
 	subi ARGL,100
 	cpi ARGL,0
 	brne L0519
-	com idx			; probably never used 2100 is not a leap year
+	sbi GPIOR0,notLeapYear ; probably never used 2100 is not a leap year
 L0519:
 	push ARGL
 	ldi ARGH,21
@@ -645,7 +756,7 @@ L0563:
 	; limit check ARGL
 	cpi ARGL,13
 	brlo L0571
-	ldi ARGL,0
+	ldi ARGL,1
 L0571:
 	clr ARGH
 	lsr ARGL
@@ -694,6 +805,14 @@ L0615:
 	andi ARGL,0x1F
 	inc ARGL
 
+	; decode month
+	mov BCC,TIME2
+	mov ARGH,TIME3
+	lsr ARGH
+	ror BCC
+	swap BCC
+	andi BCC,0x0F			; BCC now contains current month
+
 	cpi ARGL,32
 	brlo L0623
 
@@ -739,10 +858,9 @@ L0638:
 	brne L0641				
 
 	; handle leap years
-	tst idx
-	breq L0641				
-L0661:
+	sbic GPIOR0,notLeapYear				
 	rjmp L0624				; reset month
+	rjmp L0641
 
 update_Hour:
 
@@ -969,7 +1087,21 @@ L0639:
 ;*************************************
 ;
 _getchar:
-	wdr        
+	wdr  
+	; check buttons for clock setting mode
+	in c_tmp,PINC
+	com c_tmp
+	andi c_tmp,0x03
+	breq L1394
+
+L1393:
+	in c_tmp,PINC
+	com c_tmp
+	andi c_tmp,0x03
+	brne L1393
+	rcall SET_CLOCK
+
+L1394:      
 	cp iRH,iRT
 	breq  _getchar      		;  L142A Ring is empty
 
@@ -1465,15 +1597,19 @@ L0880:
 FunctionSet:	; 0b001000** -- 0x20 Interface 4 bit 1 Line 5x8 font
 				; 0b001001** -- 0x24 Interface 4 bit 1 Line 5x10 font
 				; 0b001010** -- 0x28 Interface 4 bit 2 Line 5x8 font (* most common)
-				; 0b001011** -- 0x2C Interface 4 bit 2 Line 5x10 font
+				; 0b001011** -- 0x23 Interface 4 bit 2 Line 5x10 font
 				; 0b001100** -- 0x30 Interface 8 bit 1 Line 5x8 font
 				; 0b001101** -- 0x34 Interface 8 bit 1 Line 5x10 font
 				; 0b001110** -- 0x38 Interface 8 bit 2 Line 5x8 font (* default)
-				; 0b001111** -- 0x3C Interface 8 bit 2 Line 5x10 font
+				; 0b001111** -- 0x33 Interface 8 bit 2 Line 5x10 font
+
+	; to switch modes normally 0x33 is sent as two single writes
+	; this is followed by the sequence 0x32 each as a single write 
+
 	; continue shifting ARGL to set functions
 	lsl ARGL
 	brcc PC+2
-	nop			; set 8 bit mode flag
+	nop ; sbi	GPIOR0,MODE8 ; set 8 bit mode flag
 	lsl ARGL
 	brcc PC+2
 	nop			; set number of lines (not used)
@@ -1505,7 +1641,10 @@ SetDDRAMAddr:	; 0b1aaaaaaa -- 0x80 Sets memory address pointer of DDRAM
 ParseCommand:
 
 	; command byte is passed in ARGL
+;	sbi	GPIOR0,MODE8 ; set 8 bit mode flag
 
+	; there is not a lot to this jump table, the addresses
+	; show which bits are active
 
 	; use a carry set jump table
 	lsl ARGL
@@ -1656,7 +1795,7 @@ Main:
 	CLI
 
 	clr zero
-	clr FFLAGS
+	clr fFLAGS
 
 	clr oRH			; clear the out ring pointers
 	clr oRT			; 
@@ -1680,8 +1819,19 @@ Main:
 	ldi ACC, ((default_Month << 5)&0xE0) | (default_Day & 0x1F)
 	mov TIME2,ACC
 
+	; set leap year flag
+	sbi GPIOR0,notLeapYear
+	mov idx,TIME3 	; possible issue as this is not protected in ISR
+	andi idx,0x06		; which should be off
+	brne L1797
+	cbi GPIOR0,notLeapYear
 
+	cbi GPIOR0,HiLow	; start read sync with low nybble
+	; arduino code seems to send a 0 that sets the
+	; io expander outputs to 0
+	sbi GPIOR0,MODE8
 
+L1797:
 	ldi YL,low(SegMUX+0xFF)
 	ldi YH,high(SegMUX+0xFF)
 L0413:
@@ -1747,10 +1897,10 @@ L0413:
 
 	; wait for ASSR to clear
 L0505:
-	wdr
-	lds ACC, ASSR
-	andi ACC, (1<<TCN2UB) | (1<<OCR2AUB) | (1<<OCR2BUB) | (1<<TCR2AUB) | (1<<TCR2BUB)
-	brne L0505
+;	wdr
+;	lds ACC, ASSR
+;	andi ACC, (1<<TCN2UB) | (1<<OCR2AUB) | (1<<OCR2BUB) | (1<<TCR2AUB) | (1<<TCR2BUB)
+;	brne L0505
 
 	ldi ACC,TIMSK2
 	ori ACC, (1 << TOIE2)
@@ -1839,7 +1989,6 @@ L0505:
 
 	; master read/write from main controller  (bad clock bit could be part of the 
 	; time frame.
-	rcall SET_CLOCK;
 
 
 ; TWI_Slave_Initialise( 
@@ -1851,8 +2000,29 @@ L0505:
 					 
 	rcall TWI_Start_Transceiver
 
+	rcall SET_CLOCK;  for testing clock -- useful when compiling
+; for non active boards so they do somthing when powered up
+
+
 IdleLoop:
 	wdr
+	; check buttons for clock setting mode
+	in c_tmp,PINC
+	com c_tmp
+	andi c_tmp,0x03
+	breq NoClockSet
+
+	; need better debounce here
+
+WakeClockSet:
+	in c_tmp,PINC
+	com c_tmp
+	andi c_tmp,0x03
+	brne WakeClockSet
+	rcall SET_CLOCK
+
+NoClockSet:      
+
 	cbr fFlags,(1 << TickTock)
 
 	lds	 c_tmp,TWI_statusReg
@@ -1862,6 +2032,45 @@ IdleLoop:
 ;   if (messageBuf[0] == TWI_CMD_MASTER_WRITE)
 
 	rcall _getchar			; will stall here untill a char is available
+
+ArduinoExt:
+	; extended Arduino port expander mode
+	; emulate the PCF8574* expander in 4 bit mode
+	; default pin mappin is
+	; bit 6 enable strobe (every other valid write will have this set)
+	; bit 5 Read/!Write bit -- from master point of view
+	; bit 4 Register select
+	; bit 3 D7/D3 mux
+	; bit 2 D6/D2 mux
+	; bit 1 D5/D1 mux
+	; bit 0 D4/D0 mux
+	;
+	; bit 7 is reserved -- nominally used to set a backlight
+	
+	sbis GPIOR0,MODE8
+	rjmp Mode4Rec
+	; iRH == r6
+
+	; typically the system starts with a zero to
+	; set the output pin register
+
+	; RX_BUFFER 
+	sbrc ARGL,6		;Disp_nEN 
+	rjmp IdleLoop	; ignore the latch bit and get next instruction
+	cpi ARGL,0		; handle the read of the first 0 port setter
+	brne compare3
+	mov IOMask,ARGL	; in 8 bit mode IOMask is counter of the
+	rjmp IdleLoop	; function set 3 that is recieved
+compare3:	; 3 3 3 2
+	cpi ARGL,3
+	brne compare2
+	inc IOMask
+	rjmp IdleLoop	; function set 3 that is recieved
+compare2:
+	cpi ARGL,2
+	breq count3
+	; this is actually a better place for the old
+	; way which was 16bits for 8 bit mode
 
 	cpi	ARGL, 0x10
 	brne L1573
@@ -1875,24 +2084,93 @@ IdleLoop:
 
 L1573:
 	cpi	ARGL, 0x11
-	brne L1310 ; <main+0x86>
+	breq SRAM8 ; 
+	rjmp IdleLoop
 
+; sram data
+SRAM8:
 	rcall _getchar			; will stall here untill a char is available
 	sbr fFlags, (1 << VFD_busy)
 	rcall UpdateDDRAM
 	cbr fFlags, (1 << VFD_busy)
 	rjmp IdleLoop
 
-L1310:
+count3:
+	; there should be 3 3s counted here to wake things up
+	cbi GPIOR0,MODE8
+	sbi GPIOR0,HiLow
+
+
+	; this should be followed by 3 writes of 0x03
+	; Four_bits = 2
+	; Command = 0
+	rjmp IdleLoop
+
+Mode4Rec:
+	sbrs ARGL,6		;Disp_nEN 
+	rjmp nENLatch
+	mov ARGH,ARGL
+	rjmp IdleLoop	; 
+
+nENLatch:
+	mov c_tmp,ARGH  ; attempt to re sync the data
+	eor ARGH,ARGL
+	cpi ARGH,0x40
+	breq LatchEN
+	; data is not in 4 bit latching mode
+	sbrs c_tmp,6		;Disp_nEN 	
+
+	rjmp IdleLoop		; ignore the non latched byte
+	mov ARGH,c_tmp
+	rjmp IdleLoop	; 
+
+LatchEN:
+	sbrc ARGL,5		;Disp_!WR 
+	rjmp PrepRead
+	sbis GPIOR0,HiLow
+	rjmp PrepLow
+
+;PrepHigh
+	mov IOMask,ARGL
+	swap IOMask
+	andi IOMask,0xF0
+	cbi GPIOR0,HiLow
+	rjmp IdleLoop
+
+PrepLow:
+	mov c_tmp,ARGL		; retain state bits in c_tmp
+	andi ARGL,0x0F
+	or ARGL,IOMask		; mege to form data byte
+	sbi GPIOR0,HiLow
+	
+	sbrc c_tmp,4		;Disp_RS 
+	rjmp DataMode	
+;Command mode
+	sbr fFlags, (1 << VFD_busy)
+	rcall ParseCommand
+	cbr fFlags, (1 << VFD_busy)
+	rjmp IdleLoop
+DataMode:			
+	sbr fFlags, (1 << VFD_busy)
+	rcall UpdateDDRAM
+	cbr fFlags, (1 << VFD_busy)
+	rjmp IdleLoop
+	
+PrepRead:
+	; according to figure 9 on page 22 of datasheet
+	; read returns busy flag and address for RS low
+	; data at address for RS high 
+
 
 ; TWI_CMD_MASTER_READ prepares the data from PINB in
 ; the transceiver buffer for the TWI master to fetch.
 ;            if (messageBuf[0] == TWI_CMD_MASTER_READ)
 
 	cpi	ARGL, 0x20	; 32
-	brne L2ec ; <main+0x9a>
+	brne L2ec ; 
 
 ; this is in effect _putch
+	mov oRH,oRT		; Arduino request the whole buffer
 
 	mov	ZL,oRT
 	ldi	ZH,0
@@ -1919,21 +2197,10 @@ L1310:
               
 ;  TWI_Start_Transceiver_With_Data( messageBuf, 1 );
 	rcall TWI_Start_Transceiver_With_Data
- 
-L2ec:
-	; check buttons for clock setting mode
-	in c_tmp,PINC
-	com c_tmp
-	andi c_tmp,0x03
-	breq L1394
-L1393:
-	in c_tmp,PINC
-	com c_tmp
-	andi c_tmp,0x03
-	brne L1393
-	rcall SET_CLOCK
 
-L1394:
+L2ec:
+	; check for low power idle mode
+
 	sbrc fFlags,DcD				; display is off
 	rjmp L2a8
 
@@ -2195,8 +2462,8 @@ bBCD8_2:
 TWI_vect:
 
 ;{
-	sbrc fFlags,Vfd_busy
-	reti						; hold responce until write is done
+;	sbrc fFlags,Vfd_busy
+;	reti						; hold responce until write is done
 
 	in ssreg,SREG  
 
